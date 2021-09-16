@@ -27,7 +27,7 @@ class FeedForwardNN(nn.Module):
 		#---------------TASK-------------------#
 		# To make this into a deep neural network we would need to add atleast 2 more layers
 		# Don't forget to fix the forward propagation function
-
+		
  		
 		
 
@@ -54,9 +54,8 @@ class FeedForwardNN(nn.Module):
 		
 		#-------------------TASK----------------#
 		# Implement deep layers in feed forward process
-
-
-
+		# Use relu for all the layers
+		
 		output = self.output_layer(activation2)
 		
 		return output

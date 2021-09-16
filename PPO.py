@@ -12,6 +12,8 @@ from mlagents_envs.base_env import ActionTuple
 import collections
 from buffer import Buffer
 
+import matplotlib.pyplot as plt
+
 class PPO:
 	"""
 		This is the PPO class we will use as our model in main.py
@@ -87,8 +89,8 @@ class PPO:
 		}
 
 	def load_networks(self, act_path, cri_path):
-		self.actor.load_state_dict(torch.load(act_path))
-		self.critic.load_state_dict(torch.load(cri_path))
+		self.actor.load_state_dict(torch.load(act_path,torch.device(self.dev)))
+		self.critic.load_state_dict(torch.load(cri_path,torch.device(self.dev)))
 		self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr= self.actor_lr)
 		self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr= self.critic_lr)
 
@@ -124,11 +126,7 @@ class PPO:
 			                                                                      
 			# Calculate the advantage
 			A_k = self.buffer.batch_rtgs - V.detach()
-			# One of the only tricks I use that isn't in the pseudocode. Normalizing advantages
-			# isn't theoretically necessary, but in practice it decreases the variance of 
-			# our advantages and makes convergence much more stable and faster. I added this because
-			# solving some environments was too unstable without it.
-			#A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
+			
 			
 
 			# This is the loop where we update our network for some n epochs
@@ -161,13 +159,16 @@ class PPO:
 				# performance function maximizes it.
 				actor_loss = -torch.min(surr1, surr2) 
 				critic_loss = nn.MSELoss()(V, batch_rtgs)
+				entropy=self.entropy_beta*entropy
 				#----------------------------------Task-----------------------------------#
 				# Write total loss function and make backward propagation on the actor.
-				
 
 
+				# Calculate gradients and perform backward propagation for actor and critic networks
 				# The backward propagation is already built-in to the nn from torch library, so we don't need to worry about that
-
+				self.actor_optim.zero_grad()
+				total_loss.mean().backward(retain_graph=True)
+				self.actor_optim.step()
 
 
 				# Here we apply backward propagation on the critic network
@@ -182,7 +183,7 @@ class PPO:
 				
 
 
-				# Save our model if it's time
+			# Save our model if it's time
 			if i_so_far % self.save_freq == 0:
 				print("saving model...")
 				torch.save(self.actor.state_dict(), f'results/ppo_actor.pth')
@@ -190,8 +191,20 @@ class PPO:
 				print("model saved")
 			
 			self._log_summary()
+		torch.save(self.actor.state_dict(), f'results/ppo_actor.pth')
+		torch.save(self.critic.state_dict(), f'results/ppo_critic.pth')
+		# Here we plot the learning data.
+		plt.plot( len(self.logger['actor_losses']), \
+			self.logger['actor_losses'], \
+			label="Actor loss")
+		plt.plot( len(self.logger['critic_losses']), \
+			self.logger['critic_losses'], \
+			label="Critic loss")
+		plt.xlabel('training iteration')
+		plt.ylabel('loss')
+		plt.legend()
+		plt.show()
 
-	
 	def just_roll(self):
 		"""
 			To just keep running the agents in the environment.
@@ -210,14 +223,22 @@ class PPO:
 			# Calculate action for each agent.
 			continouos_actions=np.empty((len(decision_steps), self.continuous_size))
 			discrete_actions=np.empty((len(decision_steps), self.total_branches))
+
+			for agent_id in decision_steps:
+				
+				observations=[]
+				for observation in decision_steps[agent_id].obs:
+					observations.append(observation.flatten())
+				observations = np.concatenate(observations)
+				observations = torch.tensor(observations, dtype=torch.float).to(torch.device(self.dev))
 			#------------------Task---------------------#
 			# finish agent inference mode
 
+
 			# Take the actions in the environement
-			unity_actions = ActionTuple(continouos_actions, discrete_actions)
-			self.env.set_actions(self.behavior_name, unity_actions)
+
 			# Step environment
-			self.env.step()
+
 			# If all the agents are terminated, reset
 			if len(terminal_steps) == total_agents:
 				self.env.reset()
@@ -246,122 +267,120 @@ class PPO:
 		total_agents=len(decision_steps)		
 		t = 0# Keeps track of how many timesteps we've run so far this batch
 		# Keep simulating until we've run more than or equal to specified timesteps per batch
-		while t < self.timesteps_per_buffer:
-			# Episodic data. Keeps track of obs, actions and rewards per episode, will get cleared
-			# upon each new episode
-			temp_batch_obs = []
-			temp_batch_acts =[]
-			temp_batch_log_probs =[]
-			temp_batch_lens = [0] *total_agents
-			ep_rews = [] # rewards collected per episode
-			done = [False]*total_agents # to track agent termination better
-			# To track whether observation was made before reading the reward from the environment
-			observed = [False]*total_agents
-			# nesting 2d arrays for each agent
-			for i in range(total_agents):
-				ep_rews.append([])
-				temp_batch_obs.append([])
-				temp_batch_acts.append([])
-				temp_batch_log_probs.append([])
+		# Episodic data. Keeps track of obs, actions and rewards per episode, will get cleared
+		# upon each new episode
+		temp_batch_obs = []
+		temp_batch_acts =[]
+		temp_batch_log_probs =[]
+		temp_batch_lens = [0] *total_agents
+		ep_rews = [] # rewards collected per episode
+		done = [False]*total_agents # to track agent termination better
+		# To track whether observation was made before reading the reward from the environment
+		observed = [False]*total_agents
+		# nesting 2d arrays for each agent
+		for i in range(total_agents):
+			ep_rews.append([])
+			temp_batch_obs.append([])
+			temp_batch_acts.append([])
+			temp_batch_log_probs.append([])
+		while t < (self.timesteps_per_buffer * total_agents):
 			
 			
-			self.env.reset()
+			
+			# self.env.reset()
 			# Reset the environment. sNote that obs is short for observation. 
 			decision_steps, terminal_steps = self.env.get_steps(self.behavior_name)
 			# Run an episode for a maximum of max_timesteps_per_episode timesteps
-			while any(ep_t < self.max_timesteps_per_episode for ep_t in temp_batch_lens) and t < self.timesteps_per_buffer:
+			# while t< (self.timesteps_per_buffer * total_agents):
 				
 				
-				for agent_id in decision_steps:# Track observations for each agent
-					done[agent_id] = False
-					t +=1
-					temp_batch_lens[agent_id] += 1
-					observations=[]
-					# Flatten all observations into a 1D array
-					for observation in decision_steps[agent_id].obs:
-						observations.append(observation.flatten())
-					observations = np.concatenate(observations)
-					temp_batch_obs[agent_id].append(observations)
-					observed[agent_id]= True
+			for agent_id in decision_steps:# Track observations for each agent
+				done[agent_id] = False
+				t +=1
+				temp_batch_lens[agent_id] += 1
+				observations=[]
+				# Flatten all observations into a 1D array
+				for observation in decision_steps[agent_id].obs:
+					observations.append(observation.flatten())
+				observations = np.concatenate(observations)
+				temp_batch_obs[agent_id].append(observations)
+				observed[agent_id]= True
 
 
-				# Calculate action for each agent.
-				continouos_actions=np.empty((len(decision_steps.agent_id), self.continuous_size))
-				discrete_actions=np.empty((len(decision_steps.agent_id), self.total_branches))
-				for agent_id in decision_steps:
-					# Convert observations into a tensor
-					observations = torch.tensor(temp_batch_obs[agent_id][-1], dtype=torch.float).to(torch.device(self.dev))
-					actions, c_actions, d_actions, log_prob = self.get_actions(observations)
-					continouos_actions[agent_id] = c_actions
-					discrete_actions[agent_id] = d_actions
-					# Track recent actions, and action log probabilities
-					temp_batch_log_probs[agent_id].append(log_prob)
-					temp_batch_acts[agent_id].append(actions)
+			# Calculate action for each agent.
+			continouos_actions=np.empty((len(decision_steps.agent_id), self.continuous_size))
+			discrete_actions=np.empty((len(decision_steps.agent_id), self.total_branches))
+			for agent_id in decision_steps:
+				# Convert observations into a tensor
+				observations = torch.tensor(temp_batch_obs[agent_id][-1], dtype=torch.float).to(torch.device(self.dev))
+				actions, c_actions, d_actions, log_prob = self.get_actions(observations)
+				continouos_actions[agent_id] = c_actions
+				discrete_actions[agent_id] = d_actions
+				# Track recent actions, and action log probabilities
+				temp_batch_log_probs[agent_id].append(log_prob)
+				temp_batch_acts[agent_id].append(actions)
 
+			
+			
+			# Take the actions in the environement
+			unity_actions = ActionTuple(continouos_actions, discrete_actions)
+
+			self.env.set_actions(self.behavior_name, unity_actions)
+			# Step environment
+			self.env.step()
+			# Get new observations and rewards
+			decision_steps, terminal_steps = self.env.get_steps(self.behavior_name)
+			for agent_id in decision_steps:
 				
-				
-				# Take the actions in the environement
-				unity_actions = ActionTuple(continouos_actions, discrete_actions)
-
-				self.env.set_actions(self.behavior_name, unity_actions)
-				# Step environment
-				self.env.step()
-				# Get new observations and rewards
-				decision_steps, terminal_steps = self.env.get_steps(self.behavior_name)
-				for agent_id in decision_steps:
-					
-					# Note that rew is short for reward.
-					# Track recent reward
-					rew = decision_steps[agent_id].reward
-					if observed[agent_id]:
-						ep_rews[agent_id].append(rew)
-						observed[agent_id] = False
-					if temp_batch_lens[agent_id] > self.max_timesteps_per_episode:	
-						self.buffer.append(temp_batch_obs[agent_id], temp_batch_acts[agent_id], temp_batch_log_probs[agent_id], temp_batch_lens[agent_id], ep_rews[agent_id])
-						# Reset the temp buffers
-						temp_batch_lens[agent_id] = 0
-						temp_batch_obs[agent_id] = []
-						temp_batch_acts[agent_id] = []
-						temp_batch_log_probs[agent_id] = []
-						ep_rews[agent_id] = []
-						done[agent_id] = True
-
-					
-
-				# Track episodic lenghts and rewards
-				for agent_id in terminal_steps:
-					if observed[agent_id]:
-						rew = terminal_steps[agent_id].reward
-						ep_rews[agent_id].append(rew)
-						observed[agent_id] = False
-					
+				# Note that rew is short for reward.
+				# Track recent reward
+				rew = decision_steps[agent_id].reward
+				if observed[agent_id]:
+					ep_rews[agent_id].append(rew)
+					observed[agent_id] = False
+				if temp_batch_lens[agent_id] > self.max_timesteps_per_episode:	
 					self.buffer.append(temp_batch_obs[agent_id], temp_batch_acts[agent_id], temp_batch_log_probs[agent_id], temp_batch_lens[agent_id], ep_rews[agent_id])
-					# Reset data
+					# Reset the temp buffers
 					temp_batch_lens[agent_id] = 0
 					temp_batch_obs[agent_id] = []
 					temp_batch_acts[agent_id] = []
 					temp_batch_log_probs[agent_id] = []
 					ep_rews[agent_id] = []
-					done[agent_id] = True				
-				# If all the agents are terminated, break
-				if len(terminal_steps) >= total_agents:
-					break
-			# Track episodic lenghts and rewards
-			for agent_id in range(total_agents):
-				# if got observations and took actions, but received no reward, just ignore the results
-				if observed[agent_id]:
-					t -= 1
-					temp_batch_obs[agent_id].pop()
-					temp_batch_acts[agent_id].pop()
-					temp_batch_log_probs[agent_id].pop()
-				if not done[agent_id]:
-					self.buffer.append(temp_batch_obs[agent_id], temp_batch_acts[agent_id], temp_batch_log_probs[agent_id], temp_batch_lens[agent_id], ep_rews[agent_id])
-					# Reset data
-					temp_batch_obs[agent_id] = []
-					temp_batch_acts[agent_id] = []
-					temp_batch_log_probs[agent_id] = []
-					ep_rews[agent_id] = []
 					done[agent_id] = True
+
+				
+
+			# Track episodic lenghts and rewards
+			for agent_id in terminal_steps:
+				if observed[agent_id]:
+					rew = terminal_steps[agent_id].reward
+					ep_rews[agent_id].append(rew)
+					observed[agent_id] = False
+				
+				self.buffer.append(temp_batch_obs[agent_id], temp_batch_acts[agent_id], temp_batch_log_probs[agent_id], temp_batch_lens[agent_id], ep_rews[agent_id])
+				# Reset data
+				temp_batch_lens[agent_id] = 0
+				temp_batch_obs[agent_id] = []
+				temp_batch_acts[agent_id] = []
+				temp_batch_log_probs[agent_id] = []
+				ep_rews[agent_id] = []
+				done[agent_id] = True				
+		# Track episodic lenghts and rewards
+		for agent_id in range(total_agents):
+			# if got observations and took actions, but received no reward, just ignore the results
+			if observed[agent_id]:
+				t -= 1
+				temp_batch_obs[agent_id].pop()
+				temp_batch_acts[agent_id].pop()
+				temp_batch_log_probs[agent_id].pop()
+			if not done[agent_id]:
+				self.buffer.append(temp_batch_obs[agent_id], temp_batch_acts[agent_id], temp_batch_log_probs[agent_id], temp_batch_lens[agent_id], ep_rews[agent_id])
+				# Reset data
+				temp_batch_obs[agent_id] = []
+				temp_batch_acts[agent_id] = []
+				temp_batch_log_probs[agent_id] = []
+				ep_rews[agent_id] = []
+				done[agent_id] = True
 		
 			
 
@@ -473,17 +492,17 @@ class PPO:
 		# Initialize default values for hyperparameters
 		# Algorithm hyperparameters	
 		self.timesteps_per_buffer = 2048			    # Number of timesteps to run per buffer		
-		self.timesteps_per_batch = 516                  # Number of timesteps to run per batch
-		self.max_timesteps_per_episode = 1000           # Max number of timesteps per episode
+		self.timesteps_per_batch = 512                  # Number of timesteps to run per batch
+		self.max_timesteps_per_episode = 5000           # Max number of timesteps per episode
 		self.n_updates_per_iteration = 3                # Number of times to update actor/critic per iteration
 		self.actor_lr = 0.0003                          # Learning rate of optimizers
 		self.critic_lr= 0.003
-		self.gamma = 0.95                               # Discount factor to be applied when calculating Rewards-To-Go
-		self.clip =                                  # helps define the threshold to clip the ratio during SGA
-		self.critic_discount = 
+		self.gamma =                                # Discount factor to be applied when calculating Rewards-To-Go
+		self.clip =                                  # Recommended 0.2, helps define the threshold to clip the ratio during SGA
+		self.critic_discount = 0.5
 		self.entropy_beta = 0.001
 		# Miscellaneous parameters
-		self.save_freq = 25                            # How often we save in number of iterations
+		self.save_freq = 5                            # How often we save in number of iterations
 		self.seed = None
 		# Change any default values to custom values for specified hyperparameters
 		for param, val in hyperparameters.items():

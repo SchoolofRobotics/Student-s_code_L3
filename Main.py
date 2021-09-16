@@ -29,43 +29,15 @@ if __name__ == "__main__":
         
         #Start interacting with the environment.
         env.reset()
-        # Info about our environment ---------------------
-        print (f"number of behaviours: {len(list(env.behavior_specs) )}")
-        behavior_name = list(env.behavior_specs)[0]
-        spec = env.behavior_specs[behavior_name]
-        action_spec = spec.action_spec
-        decision_steps, terminal_steps = env.get_steps(behavior_name)
-        # Examine the total number of observations per Agent
-
-        total_observations=0
-        for index, obs in enumerate(spec.observation_specs):
-            total_obs=1
-			#enumerate for matrices
-            for index, shape in enumerate(obs.shape):
-                total_obs = total_obs * shape
-            total_observations = total_observations + total_obs
-        print(f"total observations: {total_observations}")	
-        #---------------------------------------------------
-        print(f"There are {action_spec.continuous_size} continuous action(s)")
-        # How many discrete actions are possible ?
-        print(f"There are {action_spec.discrete_size} discrete action(s)")
-        for action, branch_size in enumerate(action_spec.discrete_branches):
-            print(f"Action number {action} has {branch_size} different options")
-
-        for index, obs in enumerate(decision_steps.obs):
-            print(f"obs shape: {obs.shape}")
-        for index, obs in enumerate(terminal_steps.obs):
-            print(f"terminal obs shape: {obs.shape}")
-        # Info about our environment ---------------------
 
 
         # set up PPO and start training
         ppo = PPO(FeedForwardNN, env)
         try:
             ppo.load_networks("results/ppo_actor.pth", "results/ppo_critic.pth")
-        except:
+        except FileNotFoundError:
             print("failed to find parameter files, will create new networks...")
         #ppo.just_roll()
-        ppo.learn(700000)
+        ppo.learn(300000)
     finally:
         env.close()
